@@ -10,6 +10,7 @@ import './p5.Framebuffer';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { MipmapTexture } from './p5.Texture';
+import { type } from 'os';
 
 const STROKE_CAP_ENUM = {};
 const STROKE_JOIN_ENUM = {};
@@ -633,8 +634,8 @@ p5.RendererGL = class RendererGL extends p5.Renderer {
 
     // for post processing step
     this.filterShader = undefined;
-    this.filterGraphicsLayer = undefined;
-    this.filterGraphicsLayerTemp = undefined;
+    // this.filterGraphicsLayer = undefined;
+    // this.filterGraphicsLayerTemp = undefined;
     this.defaultFilterShaders = {};
 
     this.textureMode = constants.IMAGE;
@@ -997,6 +998,7 @@ p5.RendererGL = class RendererGL extends p5.Renderer {
     this.curStrokeJoin = join;
   }
 
+  // NOTE : not needed anymore
   getFilterGraphicsLayer() {
     // Lazily initialize the filter graphics layer. We only do this on demand
     // because the graphics layer itself has a p5.RendererGL, which would then
@@ -1064,7 +1066,9 @@ p5.RendererGL = class RendererGL extends p5.Renderer {
   }
 
   filter(...args) {
-    let pg = this.getFilterGraphicsLayer();
+    let fbo = this._getTempFramebuffer();
+    let pg = fbo.target;
+
 
     // use internal shader for filter constants BLUR, INVERT, etc
     let filterParameter = undefined;
@@ -1084,7 +1088,7 @@ p5.RendererGL = class RendererGL extends p5.Renderer {
       // eg. filter(BLUR) then filter(GRAY)
       if (!(operation in this.defaultFilterShaders)) {
         this.defaultFilterShaders[operation] = new p5.Shader(
-          pg._renderer,
+          fbo.target._renderer,
           filterShaderVert,
           filterShaderFrags[operation]
         );
@@ -1097,6 +1101,8 @@ p5.RendererGL = class RendererGL extends p5.Renderer {
       this.filterShader = args[0];
     }
 
+    // NOTE : not needed anymore?
+    fbo.begin()
     pg.clear(); // prevent undesirable feedback effects accumulating secretly
 
     let pd = this._pInst.pixelDensity();
@@ -1104,16 +1110,24 @@ p5.RendererGL = class RendererGL extends p5.Renderer {
 
     // apply blur shader with multiple passes
     if (operation === constants.BLUR) {
+      const tmpFbo = this._pInst.createFramebuffer({
+        format: constants.UNSIGNED_BYTE,
+        useDepth: this._pInst._glAttributes.depth,
+        depthFormat: constants.UNSIGNED_INT,
+        antialias: this._pInst._glAttributes.antialias
+      });
+      const tmpPg = tmpFbo.target;
+      // NOTE : not needed anymore?
+      // tmpFbo.begin()
+      // tmpPg.clear(); // prevent feedback effects here too
 
-      const tmp = this.getFilterGraphicsLayerTemp();
-      tmp.clear(); // prevent feedback effects here too
+      // // setup
+      // this._pInst.push();
+      // this._pInst.noStroke();
 
-      // setup
-      this._pInst.push();
-      this._pInst.noStroke();
-
-      // draw main to temp buffer
-      tmp.image(this, -this.width / 2, -this.height / 2);
+      // // draw main to temp buffer
+      // tmpPg.image(this, -this.width / 2, -this.height / 2);
+      // tmpFbo.end()
 
       pg.shader(this.filterShader);
       this.filterShader.setUniform('texelSize', texelSize);
@@ -1122,25 +1136,37 @@ p5.RendererGL = class RendererGL extends p5.Renderer {
 
       // horiz pass
       this.filterShader.setUniform('direction', [1, 0]);
-      this.filterShader.setUniform('tex0', tmp);
+      this.filterShader.setUniform('tex0', this);
+      // NOTE
       pg.clear();
       pg.rect(-this.width / 2, -this.height / 2, this.width, this.height);
+      fbo.end()
+
 
       // read back to temp buffer
-      tmp.clear();
-      tmp.image(pg, -this.width / 2, -this.height / 2);
+      // NOTE
+      tmpFbo.begin()
+      tmpPg.clear();
+      tmpPg.image(fbo, -this.width / 2, -this.height / 2);
+      tmpFbo.end()
 
+      fbo.begin()
       // vert pass
       this.filterShader.setUniform('direction', [0, 1]);
-      this.filterShader.setUniform('tex0', tmp);
+      this.filterShader.setUniform('tex0', tmpFbo);
+      // NOTE
+
       pg.clear();
       pg.rect(-this.width / 2, -this.height / 2, this.width, this.height);
 
+
       this._pInst.pop();
+
     }
     // every other non-blur shader uses single pass
     else {
-      pg.shader(this.filterShader);
+      pg.shader(this.filterShader)
+      // NOTE : use fbo as texture?
       this.filterShader.setUniform('tex0', this);
       this.filterShader.setUniform('texelSize', texelSize);
       this.filterShader.setUniform('canvasSize', [this.width, this.height]);
@@ -1148,8 +1174,10 @@ p5.RendererGL = class RendererGL extends p5.Renderer {
       // but shouldn't hurt to always set
       this.filterShader.setUniform('filterParameter', filterParameter);
       pg.rect(-this.width / 2, -this.height / 2, this.width, this.height);
-
     }
+
+    fbo.end()
+
     // draw pg contents onto main renderer
     this._pInst.push();
     pg._pInst.resetMatrix();
@@ -1161,7 +1189,7 @@ p5.RendererGL = class RendererGL extends p5.Renderer {
     this.filterCamera._resize();
     this._pInst.setCamera(this.filterCamera);
     this._pInst.resetMatrix();
-    this._pInst.image(pg, -this.width / 2, -this.height / 2,
+    this._pInst.image(fbo, -this.width / 2, -this.height / 2,
       this.width, this.height);
     this._pInst.pop();
     this._pInst.pop();
@@ -1467,9 +1495,9 @@ p5.RendererGL = class RendererGL extends p5.Renderer {
     }
 
     // resize filter graphics layer
-    if (this.filterGraphicsLayer) {
-      p5.Renderer.prototype.resize.call(this.filterGraphicsLayer, w, h);
-    }
+    // if (this.filterGraphicsLayer) {
+    //   p5.Renderer.prototype.resize.call(this.filterGraphicsLayer, w, h);
+    // }
   }
 
   /**
